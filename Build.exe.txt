@@ -1,0 +1,14 @@
+# Run in Windows PowerShell, in the same folder as DiseaseSurveillance.ps1
+Set-ExecutionPolicy -Scope Process Bypass -Force
+
+if (-not (Get-Module -ListAvailable ps2exe)) {
+    Install-Module ps2exe -Scope CurrentUser -Force
+}
+
+Invoke-ps2exe -inputFile "$PSScriptRoot\DiseaseSurveillance.ps1" `
+              -outputFile "$PSScriptRoot\NigeriaDiseaseSurveillance.exe" `
+              -noConsole `
+              -title "Nigeria Disease Surveillance" `
+              -version "1.0.0.0"
+
+Write-Host "Done: $PSScriptRoot\NigeriaDiseaseSurveillance.exe"

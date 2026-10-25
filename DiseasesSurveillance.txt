@@ -1,0 +1,197 @@
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+[System.Windows.Forms.Application]::EnableVisualStyles()
+
+# ---------------- SAMPLE DATA (illustrative only - replace via "Load CSV") ----------------
+$sampleCsv = @'
+State,Zone,Disease,Cases,PrevCases
+Lagos,South West,Malaria,5200,5000
+Lagos,South West,Typhoid,1800,1500
+Lagos,South West,Lassa Fever,60,40
+Lagos,South West,Cholera,300,150
+Oyo,South West,Malaria,3900,3800
+Oyo,South West,Typhoid,900,880
+Oyo,South West,Measles,350,300
+Kano,North West,Malaria,4100,4000
+Kano,North West,Meningitis,700,350
+Kano,North West,Measles,1200,900
+Kano,North West,Cholera,500,480
+Kaduna,North West,Malaria,3300,3250
+Kaduna,North West,Lassa Fever,150,100
+Kaduna,North West,Meningitis,420,300
+Sokoto,North West,Meningitis,900,500
+Sokoto,North West,Measles,1100,1000
+Sokoto,North West,Malaria,2800,2700
+Borno,North East,Cholera,1500,600
+Borno,North East,Malaria,3000,2900
+Borno,North East,Measles,950,800
+Bauchi,North East,Lassa Fever,400,200
+Bauchi,North East,Malaria,2900,2850
+Bauchi,North East,Meningitis,300,280
+Rivers,South South,Malaria,3600,3500
+Rivers,South South,Typhoid,1100,1000
+Rivers,South South,Cholera,400,380
+Cross River,South South,Malaria,2400,2350
+Cross River,South South,Lassa Fever,90,60
+Enugu,South East,Malaria,2700,2650
+Enugu,South East,Typhoid,800,780
+Enugu,South East,Lassa Fever,70,70
+Benue,North Central,Malaria,3100,3000
+Benue,North Central,Lassa Fever,200,120
+Benue,North Central,Cholera,350,200
+FCT,North Central,Malaria,2000,1950
+FCT,North Central,Typhoid,700,650
+FCT,North Central,Measles,260,250
+'@
+
+$script:analysis = $null
+
+# ---------------- ALGORITHM ----------------
+# Percent  = disease cases / all cases in that state * 100
+# Growth   = (Cases - PrevCases) / PrevCases * 100
+# Alert    = OUTBREAK if Growth >= 50 and Percent >= 10
+#            WATCH    if Growth >= 25
+#            NORMAL   otherwise
+function Get-Analysis($rows) {
+    $out = New-Object System.Collections.ArrayList
+    foreach ($g in ($rows | Group-Object State)) {
+        $total = ($g.Group | Measure-Object -Property Cases -Sum).Sum
+        foreach ($r in $g.Group) {
+            $cases = [double]$r.Cases; $prev = [double]$r.PrevCases
+            $pct = if ($total -gt 0) { [math]::Round($cases / $total * 100, 1) } else { 0 }
+            $growth = if ($prev -gt 0) { [math]::Round(($cases - $prev) / $prev * 100, 1) } else { 0 }
+            $alert = 'NORMAL'
+            if ($growth -ge 50 -and $pct -ge 10) { $alert = 'OUTBREAK' }
+            elseif ($growth -ge 25) { $alert = 'WATCH' }
+            [void]$out.Add([pscustomobject]@{
+                State = $r.State; Zone = $r.Zone; Disease = $r.Disease
+                Cases = [int]$cases; Percent = $pct; Growth = $growth; Alert = $alert })
+        }
+    }
+    return $out
+}
+
+function Set-Data($csvText) {
+    $script:analysis = Get-Analysis ($csvText | ConvertFrom-Csv)
+    $cbState.Items.Clear(); [void]$cbState.Items.Add('All states')
+    $script:analysis | Select-Object -ExpandProperty State -Unique | Sort-Object |
+        ForEach-Object { [void]$cbState.Items.Add($_) }
+    $cbState.SelectedIndex = 0
+}
+
+function Get-Selection {
+    $st = $cbState.SelectedItem; $ds = $cbDisease.SelectedItem
+    $script:analysis | Where-Object {
+        ($st -eq 'All states' -or $_.State -eq $st) -and ($ds -eq 'All diseases' -or $_.Disease -eq $ds) }
+}
+
+function Refresh-View {
+    if (-not $script:analysis) { return }
+    $sel = @(Get-Selection)
+    $dt = New-Object System.Data.DataTable
+    foreach ($c in 'State','Zone','Disease','Cases','Percent (%)','Growth (%)','Alert') { [void]$dt.Columns.Add($c) }
+    foreach ($r in ($sel | Sort-Object State, @{e='Percent';Descending=$true})) {
+        [void]$dt.Rows.Add($r.State, $r.Zone, $r.Disease, $r.Cases, $r.Percent, $r.Growth, $r.Alert)
+    }
+    $grid.DataSource = $dt
+    foreach ($row in $grid.Rows) {
+        switch ($row.Cells['Alert'].Value) {
+            'OUTBREAK' { $row.DefaultCellStyle.BackColor = [Drawing.Color]::FromArgb(255,200,200) }
+            'WATCH'    { $row.DefaultCellStyle.BackColor = [Drawing.Color]::FromArgb(255,240,190) }
+        }
+    }
+    $script:chartData = @($sel | Group-Object Disease | ForEach-Object {
+        [pscustomobject]@{ Disease = $_.Name; Cases = ($_.Group | Measure-Object Cases -Sum).Sum } } |
+        Sort-Object Cases -Descending)
+    $tot = ($script:chartData | Measure-Object Cases -Sum).Sum
+    foreach ($c in $script:chartData) { $c | Add-Member Pct ([math]::Round($c.Cases / [math]::Max($tot,1) * 100, 1)) -Force }
+    $top = if ($script:chartData.Count) { $script:chartData[0].Disease } else { 'n/a' }
+    $out = @($sel | Where-Object Alert -eq 'OUTBREAK').Count
+    $lblSummary.Text = "Most prominent: $top     |     Total cases: $tot     |     Outbreak alerts: $out"
+    $chart.Invalidate()
+}
+
+# ---------------- GUI ----------------
+$form = New-Object Windows.Forms.Form
+$form.Text = 'Nigeria Disease Surveillance Dashboard'
+$form.Size = New-Object Drawing.Size(1100, 700)
+$form.StartPosition = 'CenterScreen'
+$form.BackColor = [Drawing.Color]::White
+
+$header = New-Object Windows.Forms.Label
+$header.Text = 'NIGERIA DISEASE SURVEILLANCE  -  SAMPLE DATA, NOT OFFICIAL FIGURES'
+$header.Dock = 'Top'; $header.Height = 48; $header.TextAlign = 'MiddleLeft'
+$header.BackColor = [Drawing.Color]::FromArgb(0,110,70); $header.ForeColor = [Drawing.Color]::White
+$header.Font = New-Object Drawing.Font('Segoe UI', 13, [Drawing.FontStyle]::Bold)
+$header.Padding = New-Object Windows.Forms.Padding(12,0,0,0)
+
+$bar = New-Object Windows.Forms.Panel
+$bar.Dock = 'Top'; $bar.Height = 52; $bar.BackColor = [Drawing.Color]::FromArgb(240,244,242)
+
+function New-Lbl($t, $x) { $l = New-Object Windows.Forms.Label; $l.Text = $t; $l.Location = "$x,18"; $l.AutoSize = $true; $bar.Controls.Add($l) }
+New-Lbl 'State:' 12
+$cbState = New-Object Windows.Forms.ComboBox; $cbState.DropDownStyle = 'DropDownList'; $cbState.Location = '60,14'; $cbState.Width = 150
+New-Lbl 'Disease:' 230
+$cbDisease = New-Object Windows.Forms.ComboBox; $cbDisease.DropDownStyle = 'DropDownList'; $cbDisease.Location = '290,14'; $cbDisease.Width = 150
+[void]$cbDisease.Items.Add('All diseases')
+'Malaria','Lassa Fever','Cholera','Typhoid','Measles','Meningitis' | ForEach-Object { [void]$cbDisease.Items.Add($_) }
+$cbDisease.SelectedIndex = 0
+
+$btnLoad = New-Object Windows.Forms.Button; $btnLoad.Text = 'Load CSV'; $btnLoad.Location = '470,12'; $btnLoad.Size = '100,28'
+$btnExport = New-Object Windows.Forms.Button; $btnExport.Text = 'Export CSV'; $btnExport.Location = '580,12'; $btnExport.Size = '100,28'
+$bar.Controls.AddRange(@($cbState, $cbDisease, $btnLoad, $btnExport))
+
+$lblSummary = New-Object Windows.Forms.Label
+$lblSummary.Dock = 'Bottom'; $lblSummary.Height = 30; $lblSummary.TextAlign = 'MiddleLeft'
+$lblSummary.BackColor = [Drawing.Color]::FromArgb(240,244,242)
+$lblSummary.Font = New-Object Drawing.Font('Segoe UI', 10, [Drawing.FontStyle]::Bold)
+
+$split = New-Object Windows.Forms.SplitContainer
+$split.Dock = 'Fill'; $split.SplitterDistance = 560
+
+$grid = New-Object Windows.Forms.DataGridView
+$grid.Dock = 'Fill'; $grid.ReadOnly = $true; $grid.AllowUserToAddRows = $false
+$grid.AutoSizeColumnsMode = 'Fill'; $grid.RowHeadersVisible = $false
+$grid.BackgroundColor = [Drawing.Color]::White; $grid.SelectionMode = 'FullRowSelect'
+$split.Panel1.Controls.Add($grid)
+
+$chart = New-Object Windows.Forms.Panel
+$chart.Dock = 'Fill'; $chart.BackColor = [Drawing.Color]::White
+$chart.GetType().GetProperty('DoubleBuffered', [Reflection.BindingFlags]'Instance,NonPublic').SetValue($chart, $true, $null)
+$split.Panel2.Controls.Add($chart)
+
+$form.Controls.AddRange(@($split, $lblSummary, $bar, $header))
+
+# Bar chart: share (%) of each disease in the current selection
+$chart.Add_Paint({
+    param($s, $e)
+    $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'
+    $f = New-Object Drawing.Font('Segoe UI', 9)
+    $title = New-Object Drawing.Font('Segoe UI', 11, [Drawing.FontStyle]::Bold)
+    $g.DrawString('Disease share of reported cases (%)', $title, [Drawing.Brushes]::Black, 10, 10)
+    $y = 50; $maxW = $s.Width - 220
+    foreach ($d in $script:chartData) {
+        $w = [int]($maxW * $d.Pct / 100)
+        $g.DrawString($d.Disease, $f, [Drawing.Brushes]::Black, 10, $y + 3)
+        $g.FillRectangle([Drawing.Brushes]::SeaGreen, 110, $y, [math]::Max($w,2), 24)
+        $g.DrawString("$($d.Pct)%", $f, [Drawing.Brushes]::Black, 115 + $w, $y + 3)
+        $y += 38
+    }
+})
+
+$cbState.Add_SelectedIndexChanged({ Refresh-View })
+$cbDisease.Add_SelectedIndexChanged({ Refresh-View })
+
+$btnLoad.Add_Click({
+    $d = New-Object Windows.Forms.OpenFileDialog; $d.Filter = 'CSV files|*.csv'
+    if ($d.ShowDialog() -eq 'OK') {
+        try { Set-Data (Get-Content $d.FileName -Raw) }
+        catch { [Windows.Forms.MessageBox]::Show('Could not read CSV. Needed columns: State,Zone,Disease,Cases,PrevCases') | Out-Null }
+    }
+})
+$btnExport.Add_Click({
+    $d = New-Object Windows.Forms.SaveFileDialog; $d.Filter = 'CSV files|*.csv'; $d.FileName = 'surveillance_report.csv'
+    if ($d.ShowDialog() -eq 'OK') { Get-Selection | Export-Csv $d.FileName -NoTypeInformation }
+})
+
+Set-Data $sampleCsv
+[void]$form.ShowDialog()
